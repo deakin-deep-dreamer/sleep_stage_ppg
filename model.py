@@ -305,7 +305,7 @@ class DenseNet(nn.Module):
 
 
 if __name__ == '__main__':
-    Hz = 64
+    Hz = 128 // 2
     SEG_SEC = 30
     NUM_CLASSES = 2
     IN_CHAN = 1

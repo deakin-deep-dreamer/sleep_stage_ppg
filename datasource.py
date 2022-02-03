@@ -100,7 +100,7 @@ def load_data(
 
 
 class PPGDataset(Dataset):
-    r"""ECG dataset class."""
+    r"""PPG dataset class."""
 
     def __init__(
         self, input_directory, hz, seg_sec=30, n_chan=1,

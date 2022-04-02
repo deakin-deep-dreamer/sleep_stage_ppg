@@ -20,8 +20,10 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import confusion_matrix
 
 # from models import model_zoo_classif as model_zoo_classif
-from models import model_zoo_classif2 as model_zoo_classif
+# from models import model_zoo_classif2 as model_zoo_classif
 from lib import model_training
+import model
+import datasource
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +111,7 @@ def create_model(conv_kernel=15):
         _low_conv_strides.extend([1, 1])
         _low_conv_pooling_kernels.extend([2])
 
-    model = model_zoo_classif.DenseNet(
+    _model = model.DenseNet(
         input_size=Hz * SEG_SEC * SEG_LARGE_FACTOR,
         in_channels=IN_CHAN,
         n_classes=NUM_CLASSES,
@@ -141,407 +143,7 @@ def create_model(conv_kernel=15):
         low_conv_pooling_kernels=_low_conv_pooling_kernels,
         transition_pooling=[2 for _ in range(N_DENSE_BLOCK)],
     )
-    return model
-
-
-class EcgDataset(Dataset):
-    r"""ECG dataset class."""
-
-    def __init__(
-        self,
-        input_directory,
-        hz,
-        seg_sec=30,
-        n_chan=1,
-        seg_slide_sec=30,
-        n_skip_segments=0,
-        data_augment=False,
-        data_aug_cfg=None,
-        log=log,
-    ):
-        r"""Instantiate EcgDataset."""
-        self.input_directory = input_directory
-        self.data_augment = data_augment
-        self.data_aug_cfg = data_aug_cfg
-        self.log = log
-        # self.records = records
-        # self.labels = labels
-        # self.header_files = header_files
-        self.record_names = []
-        self.record_wise_segments = {}
-        self.hz = hz
-        self.seg_sec = seg_sec
-        self.seg_sz = self.seg_sec * self.hz
-        self.n_chan = n_chan
-        self.seg_slide_sec = seg_slide_sec
-        self.segments = []
-        self.seg_labels = []
-        self.n_skip_segments = n_skip_segments
-
-        self.initialise()
-
-        """Indexes of data, another level of abstraction. Flexible to shuffle."""
-        self.indexes = [i for i in range(len(self.segments))]
-        np.random.shuffle(self.indexes)
-
-    def initialise(self):
-        r"""Initialise dataset."""
-        self.header_files = []
-        for f in os.listdir(self.input_directory):
-            g = os.path.join(self.input_directory, f)
-            if (
-                f.endswith(FILE_TYPE[-1])
-                and sum([1 for i in range(len(SUBJECTS)) if f.find(SUBJECTS[i]) > -1])
-                > 0
-            ):
-                """PPG file"""
-                self.header_files.append(g)
-        self.debug(
-            f"Input: {self.input_directory}, "
-            f"header files: {len(self.header_files)}, seg_size:{self.seg_sz}"
-        )
-
-        classes = get_classes(self.input_directory)
-        self.debug(f"{len(classes)} found, [{classes}]")
-
-        self.debug("Loading data...")
-
-        records = []
-        labels = []
-
-        for i in range(len(self.header_files)):
-            recording, header = load_data(self.header_files[i])
-            records.append(recording)
-
-            """assign index to labels"""
-            labels_act = list()
-            # labels_act = np.zeros(NUM_CLASSES)
-            for lbl in header:
-                labels_act.append(LABELS_MAP.get(lbl.strip()))
-                # labels_act[LABELS_MAP.get(l.strip())] = 1
-            labels.append(labels_act)
-
-        self.debug(f"Segmenting {len(records)} records ...")
-
-        for i_rec in range(len(records)):
-            rec = records[i_rec]
-
-            # r"Bandpass filter."
-            # rec = bandpass(
-            #     rec, hz=self.hz
-            # )
-
-            r"Derivative of signal. Flatten np.ndarray before pass to fn."
-            # rec_diff = derivative(rec[:, :self.n_chan].reshape(-1))
-
-            """Normalise"""
-            # rec = zscore(rec, axis=0)
-
-            n_samples = rec.shape[0]
-            n_windows = n_samples // (self.hz * self.seg_slide_sec)
-            if self.header_files is not None:
-                """Extract recordname from header file path"""
-                h = self.header_files[i_rec]
-                self.record_names.append(
-                    (lambda x: x[: x.rindex(".")])(h.split("/")[-1])
-                )
-                """initialise record-wise segment index storage"""
-                self.record_wise_segments[self.record_names[-1]] = []
-                self.debug(
-                    f"[{h}] Calculating... {n_windows} segments out of {n_samples} samples, {len(labels[i_rec])} labels."
-                )
-
-            i_rec_seg_start = len(self.segments)
-            for i_window in range(self.n_skip_segments, n_windows):
-                start = i_window * self.hz * self.seg_slide_sec
-                seg_ = rec[start : start + self.seg_sz, : self.n_chan]
-
-                # print(f"seg_ : {seg_.shape}")
-
-                r"Convert np ndarray to array."
-                # seg_diff_ = rec_diff[start:start + self.seg_sz]
-                # seg_ = self.bandpass(seg_)
-
-                r"Sec-by-sec norm to reduce outlier effect."
-                seg_z_ = []
-                seg_sub_mean_ = []
-                for i_sec_ in range(0, self.seg_sec):
-                    sec_seg_ = seg_[i_sec_ * self.hz : (i_sec_ + 1) * self.hz]
-                    seg_z_.extend(zscore(sec_seg_))
-                    # seg_sub_mean_.extend(
-                    #     np.array(sec_seg_) - np.mean(sec_seg_))
-
-                self.segments.append(
-                    # np.column_stack(
-                    #     [zscore(seg_sub_mean_), zscore(seg_diff_)]
-                    # )
-                    np.column_stack(
-                        # zscore(seg_sub_mean_).T
-                        np.array(seg_z_).T
-                    )
-                )
-                # print(f"seg_z_ : {len(seg_z_)}, segment: {self.segments[-1].shape}")
-
-                self.seg_labels.append(labels[i_rec][i_window])
-                """store segment index to record-wise store"""
-                self.record_wise_segments[self.record_names[-1]].append(
-                    len(self.segments) - 1
-                )
-
-                r"Data Augmentation."
-                if self.data_augment and i_window > self.n_skip_segments:
-                    r"Generate new segments based on current and previous \
-                    segments."
-                    if NUM_CLASSES == 2:
-                        r"2-class, already enough samples. Take only previous\
-                        segment has the same label."
-                        if self.seg_labels[-1] == self.seg_labels[-2]:
-                            aug_start_sec, aug_stop_sec, aug_step = 10, 25, 1
-                            if self.data_aug_cfg == 1:
-                                # minimal aug
-                                # aug_start_sec, aug_stop_sec, aug_step = 13, 20, 2
-                                aug_step = 2
-
-                            self.seg_augment(
-                                i_prev_seg_start_sec=aug_start_sec,
-                                step_sec=aug_step,
-                                i_prev_seg_stop_sec=aug_stop_sec,
-                            )
-
-                    else:
-                        if self.seg_labels[-1] == self.seg_labels[-2]:
-                            aug_start_sec, aug_stop_sec, aug_step = 10, 29, 2
-                            if self.data_aug_cfg == 1:
-                                # minimal aug
-                                aug_step = 4
-                            self.seg_augment(
-                                i_prev_seg_start_sec=aug_start_sec,
-                                step_sec=aug_step,
-                                i_prev_seg_stop_sec=aug_stop_sec,
-                            )
-                        else:
-                            r"Prev segment label different, start taking from 75%."
-                            aug_start_sec, aug_stop_sec, aug_step = 23, 29, 2
-                            if self.data_aug_cfg == 1:
-                                # minimal aug
-                                aug_step = 4
-                            self.seg_augment(
-                                i_prev_seg_start_sec=aug_start_sec,
-                                step_sec=aug_step,
-                                i_prev_seg_stop_sec=aug_stop_sec,
-                            )
-
-            if SEG_LARGE_FACTOR > 1:
-                # self.resegment(i_rec_seg_start)
-                self.resegment_historical(i_rec_seg_start)
-
-            self.debug(
-                f"... [{self.record_names[i_rec]}] orig window:{n_windows}, "
-                f"new created: {len(self.segments)-i_rec_seg_start}, "
-                f"labels: {len(self.seg_labels)-i_rec_seg_start}, "
-                f"class-dist: {np.unique(self.seg_labels[i_rec_seg_start:], return_counts=True)}, "
-                f"seg_shape:{self.segments[-1].shape}"
-            )
-        self.debug(f"Segmentation done, total {len(self.segments)}.")
-
-    def seg_augment(self, i_prev_seg_start_sec=20, step_sec=1, i_prev_seg_stop_sec=1):
-        r"""Spawn segment from previous and current segment with specified\
-        second slide."""
-        prev_seg = self.segments[-2]
-        cur_seg = self.segments[-1]
-        cur_label = self.seg_labels[-1]
-        i_cur_seg_stop_sec = self.seg_sec - (self.seg_sec - i_prev_seg_start_sec)
-        count_new_seg = 0
-        n_segs_before_aug = len(self.segments)
-        # for i_prev_start_sec in range(i_prev_seg_start_sec, self.seg_sec):
-        for i_prev_start_sec in range(
-            i_prev_seg_start_sec, i_prev_seg_stop_sec, step_sec
-        ):
-            count_new_seg += 1
-            r"Form new seg = 0.5*prev_seg + 0.5*cur_seg"
-            new_seg = []
-            # new_seg.extend(prev_seg[i_prev_start_sec*self.hz:, :])
-            # new_seg.extend(cur_seg[:i_cur_seg_stop_sec*self.hz, :])
-            new_seg = np.concatenate(
-                (
-                    prev_seg[i_prev_start_sec * self.hz :, :],
-                    cur_seg[: i_cur_seg_stop_sec * self.hz, :],
-                ),
-                axis=0,
-            )
-
-            # print(f"new-seg-len:{len(new_seg)}, shape:{new_seg.shape}")
-            assert new_seg.shape[0] == self.seg_sz
-
-            r"Right shift prev and cur segment index by sampling hz."
-            i_cur_seg_stop_sec += step_sec
-
-            r"Add to segment and label global list."
-            # self.segments.append(new_seg)
-            # self.seg_labels.append(cur_label)
-            self.segments.insert(-2, new_seg)
-            self.seg_labels.insert(-2, cur_label)
-
-            r"store segment index to record-wise store."
-            self.record_wise_segments[self.record_names[-1]].append(
-                len(self.segments) - 1
-            )
-
-        # self.debug(
-        #     f"[Augment:{cur_label}] rec: {self.record_names[-1]}, "
-        #     f"new_segs:{count_new_seg}, before:{n_segs_before_aug}, "
-        #     f"after:{len(self.segments)}"
-        # )
-
-    def resegment_historical(self, i_rec_seg_start):
-        r"""Enlarge current segment filling from historical segments."""
-        seg_len_orig = Hz * SEG_SEC
-        for i_cur_rec_seg in range(i_rec_seg_start, len(self.segments)):
-            seg = self.segments[i_cur_rec_seg]
-            new_seg_buf = np.zeros((seg_len_orig * SEG_LARGE_FACTOR, IN_CHAN))
-            r"Place current segment to far right of new segment."
-            # print(f"seg:{seg.shape}, new_seg_buf:{new_seg_buf.shape}")
-            new_seg_buf[seg_len_orig * (SEG_LARGE_FACTOR - 1) :, :] = seg
-
-            if i_cur_rec_seg - 1 < i_rec_seg_start:
-                r"Not enough historical segments of current record."
-                self.segments[i_cur_rec_seg] = new_seg_buf
-                continue
-            r"Copy historical segment's 1sec deducted portion."
-            prev_seg = self.segments[i_cur_rec_seg - 1]
-            # print(f"prev_seg:{seg.shape}, new_seg_buf:{new_seg_buf.shape}")
-            new_seg_buf[: seg_len_orig * (SEG_LARGE_FACTOR - 1), :] = prev_seg[
-                seg_len_orig:, :
-            ]
-            r"Update current segment."
-            self.segments[i_cur_rec_seg] = new_seg_buf
-
-        self.debug(
-            f"[{self.record_names[-1]}] After add extended segs, "
-            f"seg_created:{len(self.segments)-i_rec_seg_start}, "
-            f"n_seg:{len(self.segments)}, seg_shape:{self.segments[-1].shape}"
-        )
-
-    def on_epoch_end(self):
-        pass
-
-    def __len__(self):
-        return len(self.segments)
-
-    def __getitem__(self, idx):
-        return None, None
-
-    def debug(self, msg):
-        if DEBUG:
-            self.log(msg)
-
-
-class PartialDataset(EcgDataset):
-    r"""Generate dataset from a parent dataset and indexes."""
-
-    def __init__(
-        self,
-        dataset,
-        seg_index,
-        test=False,
-        shuffle=False,
-        balance_labels=False,
-        balance_minority_idx=0,
-        as_np=False,
-    ):
-        r"""Instantiate dataset from parent dataset and indexes."""
-        self.memory_ds = dataset
-        self.indexes = seg_index[:]
-        self.test = test
-        self.shuffle = shuffle
-        self.as_np = as_np
-        if balance_labels:
-            self.__balance_labels__(balance_minority_idx)
-
-    def __balance_labels__(self, idx_minority):
-        r"""Undersample majority class samples to balance dataset."""
-        data_idx, data_dist = np.unique(
-            [self.memory_ds.seg_labels[i] for i in self.indexes], return_counts=True
-        )
-        # np.unique returns tuple of two arrays i. index-array, and ii. data-array.
-        log(
-            f"partial-ds data-dist:{data_idx}, {data_dist}, idx_minority:{idx_minority}"
-        )
-        min_lbl, min_lbl_freq = np.argmin(data_dist), data_dist[np.argmin(data_dist)]
-        if idx_minority:
-            r"User defined minority class."
-            min_lbl_freq = np.sort(data_dist)[idx_minority]
-            min_lbl = np.where(data_dist == min_lbl_freq)[0][0]
-        log(f"min_lbl/freq: {min_lbl}/{min_lbl_freq}")
-
-        new_indexes = []
-        for i_cur_data in data_idx:
-            # if i_cur_data == min_lbl:
-            #     continue
-            n_reduce = data_dist[i_cur_data] - min_lbl_freq
-
-            label_idx_idx = [
-                i
-                for i in range(len(self.indexes))
-                if self.memory_ds.seg_labels[self.indexes[i]] == i_cur_data
-            ]
-            log(f"Label:{i_cur_data}, reduce: {n_reduce} from {len(label_idx_idx)}")
-            for _ in range(n_reduce):
-                i_del = random.randint(0, len(label_idx_idx) - 1)
-                label_idx_idx.pop(i_del)
-            new_indexes.extend([self.indexes[i] for i in label_idx_idx])
-            log(
-                f"Label:{i_cur_data}, reduced to {len(label_idx_idx)}, "
-                f"detail:{new_indexes[len(new_indexes)-10:]}"
-            )
-        r"Replace self.indexes with new_indexes."
-        self.indexes = new_indexes[:]
-
-        r"After balancing"
-        data_idx, data_dist = np.unique(
-            [self.memory_ds.seg_labels[i] for i in self.indexes], return_counts=True
-        )
-        log(f"After balance, partial-ds data-dist:{data_idx}, {data_dist}")
-
-    def on_epoch_end(self):
-        r"""End of epoch."""
-        if self.shuffle and not self.test:
-            np.random.shuffle(self.indexes)
-
-    def __len__(self):
-        r"""Dataset length."""
-        return len(self.indexes)
-
-    def __getitem__(self, idx):
-        r"""Find and return item."""
-        ID = self.indexes[idx]
-        # trainX = np.array(self.memory_ds.segments[ID])
-        trainX = self.memory_ds.segments[ID]
-        trainY = self.memory_ds.seg_labels[ID]
-
-        if self.as_np:
-            return trainX, trainY
-
-        X_tensor = Variable(torch.from_numpy(trainX)).type(torch.FloatTensor)
-        # print(f"X_tensor before: {X_tensor.size()}")
-        r"numpy array shape: (n_samp, n_chan), reshape it to (n_chan, n-samp)."
-        X_tensor = X_tensor.reshape(X_tensor.size()[1], -1)
-        # print(f"X_tensor after: {X_tensor.size()}")
-        # Y_tensor = torch.from_numpy(trainY).type(torch.FloatTensor)
-        Y_tensor = trainY
-        if torch.any(torch.isnan(X_tensor)):
-            X_tensor = torch.nan_to_num(X_tensor)
-        return X_tensor, Y_tensor
-
-    def distort_seg(self, seg):
-        r"""Add noise to segment."""
-        noise = np.random.normal(0, 1, seg.shape[-1]).reshape(1, -1)
-        seg += noise
-
-    def debug(self, msg):
-        r"""Output log message."""
-        if DEBUG:
-            self.memory_ds.log(msg)
+    return _model
 
 
 def train_loov(input_dir, k_fold=5):
@@ -550,11 +152,11 @@ def train_loov(input_dir, k_fold=5):
     Subject-wise model testing which was trained with rest subjects using
     k-fold.
     """
-    dataset = EcgDataset(
+    dataset = datasource.PPGDataset(
         input_directory=input_dir, hz=Hz, data_augment=False, n_skip_segments=1,
     )
     if DATA_AUG:
-        augmented_dataset = EcgDataset(
+        augmented_dataset = dataset.PPGDataset(
             input_directory=input_dir,
             hz=Hz,
             data_augment=True,
@@ -569,7 +171,7 @@ def train_loov(input_dir, k_fold=5):
     for i_test_rec_name, test_rec_name in enumerate(dataset.record_names):
         test_idx = []
         test_idx.extend(dataset.record_wise_segments[test_rec_name])
-        test_dataset = PartialDataset(dataset, seg_index=test_idx, test=True)
+        test_dataset = datasource.PartialDataset(dataset, seg_index=test_idx, test=True)
 
         preds = []
         labels = []
@@ -593,14 +195,16 @@ def train_loov(input_dir, k_fold=5):
                     [augmented_dataset.seg_labels[i] for i in train_idx],
                 )
             )
-            train_dataset = PartialDataset(
+            train_dataset = datasource.PartialDataset(
                 augmented_dataset,
                 seg_index=train_index,
                 shuffle=True,
                 balance_labels=BALANCED_CLASS,
                 balance_minority_idx=IDX_MINORITY_BALANCE,
             )
-            val_dataset = PartialDataset(augmented_dataset, seg_index=val_index)
+            val_dataset = datasource.PartialDataset(
+                augmented_dataset, seg_index=val_index
+            )
 
             preds_fold = []
             labels_fold = []
